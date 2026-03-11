@@ -4,7 +4,7 @@ WidgetMetadata = {
   description: "获取 Trakt 个性化推荐电影 / 剧集列表",
   author: "hyl",
   site: "https://github.com/quantumultxx/ForwardWidgets",
-  version: "1.2",
+  version: "1.3",
   requiredVersion: "0.0.1",
   detailCacheDuration: 1800,
   modules: [
@@ -420,14 +420,18 @@ function mapToForwardItem(item, tmdbDetail, mediaKind) {
     actualTmdbId = tmdbDetail.id;
   }
 
+  var resolvedMediaType = mediaKind === "movie" ? "movie" : "tv";
+var resolvedId = actualTmdbId || ids.tmdb;
+
+if (resolvedId) {
   return {
-    id: String(actualTmdbId || ids.trakt || ids.slug || title),
-    type: "link",
+    id: String(resolvedId),
+    type: "tmdb",
     title: title,
     posterPath: posterPath,
     backdropPath: backdropPath,
     releaseDate: releaseDate,
-    mediaType: mediaKind === "movie" ? "movie" : "tv",
+    mediaType: resolvedMediaType,
     rating: rating,
     description: buildDescription({
       year: item.year || "",
@@ -435,8 +439,27 @@ function mapToForwardItem(item, tmdbDetail, mediaKind) {
       overview: overview || ""
     }, mediaKind),
     genreTitle: mapGenres(tmdbDetail ? tmdbDetail.genres : null),
-    link: traktUrl
+    link: null
   };
+}
+
+return {
+  id: String(ids.trakt || ids.slug || title),
+  type: "link",
+  title: title,
+  posterPath: posterPath,
+  backdropPath: backdropPath,
+  releaseDate: releaseDate,
+  mediaType: resolvedMediaType,
+  rating: rating,
+  description: buildDescription({
+    year: item.year || "",
+    status: tmdbDetail ? (tmdbDetail.status || "") : "",
+    overview: overview || ""
+  }, mediaKind),
+  genreTitle: mapGenres(tmdbDetail ? tmdbDetail.genres : null),
+  link: traktUrl
+};
 }
 
 async function fetchTraktRecommendations(mediaKind, params) {
