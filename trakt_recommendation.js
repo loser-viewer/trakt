@@ -24,7 +24,7 @@ WidgetMetadata = {
         {
           name: "access_token",
           title: "Trakt Access Token",
-          type: "password",
+          type: "input",
           value: ""
         },
         {
