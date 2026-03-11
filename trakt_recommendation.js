@@ -4,7 +4,7 @@ WidgetMetadata = {
   description: "获取 Trakt 个性化推荐电影 / 剧集列表",
   author: "hyl",
   site: "https://github.com/quantumultxx/ForwardWidgets",
-  version: "1.1",
+  version: "1.2",
   requiredVersion: "0.0.1",
   detailCacheDuration: 1800,
   modules: [
@@ -33,8 +33,8 @@ WidgetMetadata = {
           type: "enumeration",
           value: "default",
           enumOptions: [
-            { title: "默认", value: "default" },
-            { title: "随机", value: "random" }
+            { title: "默认排序", value: "default" },
+            { title: "随机排序", value: "random" }
           ]
         },
         {
@@ -69,8 +69,8 @@ WidgetMetadata = {
           type: "enumeration",
           value: "default",
           enumOptions: [
-            { title: "默认", value: "default" },
-            { title: "随机", value: "random" }
+            { title: "默认排序", value: "default" },
+            { title: "随机排序", value: "random" }
           ]
         },
         {
@@ -113,6 +113,15 @@ function shuffleArray(arr) {
     newArr[j] = temp;
   }
   return newArr;
+}
+
+function normalizeText(text) {
+  if (!text) return "";
+  return String(text)
+    .toLowerCase()
+    .replace(/[【】\[\]\(\)（）:：·・,，.\-_'"]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function buildDescription(item, mediaType) {
@@ -199,38 +208,143 @@ async function tmdbGetDetailById(tmdbId, mediaType) {
   }
 }
 
-async function tmdbSearchByTitle(title, year, mediaType) {
-  if (!title) return null;
+function getTmdbYear(result) {
+  var dateStr = "";
+  if (result && result.release_date) dateStr = result.release_date;
+  else if (result && result.first_air_date) dateStr = result.first_air_date;
 
-  try {
-    var type = mediaType === "movie" ? "movie" : "tv";
-    var params = {
-      query: title,
-      language: "zh-CN",
-      include_adult: false
-    };
+  if (!dateStr || String(dateStr).length < 4) return "";
+  return String(dateStr).substring(0, 4);
+}
 
-    if (year) {
-      if (type === "movie") {
-        params.primary_release_year = year;
-      } else {
-        params.first_air_date_year = year;
+function scoreTmdbCandidate(result, title, year, mediaType) {
+  var score = 0;
+  var queryTitle = normalizeText(title);
+  var resultTitle = normalizeText(
+    (result && (result.title || result.name || result.original_title || result.original_name)) || ""
+  );
+  var resultOriginal = normalizeText(
+    (result && (result.original_title || result.original_name)) || ""
+  );
+
+  if (!result) return -9999;
+
+  if (queryTitle && resultTitle === queryTitle) score += 120;
+  else if (queryTitle && resultOriginal === queryTitle) score += 110;
+  else if (queryTitle && resultTitle.indexOf(queryTitle) >= 0) score += 80;
+  else if (queryTitle && resultOriginal.indexOf(queryTitle) >= 0) score += 70;
+  else {
+    var qWords = queryTitle.split(" ");
+    var hit = 0;
+    for (var i = 0; i < qWords.length; i++) {
+      if (qWords[i] && (resultTitle.indexOf(qWords[i]) >= 0 || resultOriginal.indexOf(qWords[i]) >= 0)) {
+        hit++;
       }
     }
-
-    var response = await Widget.tmdb.get("/search/" + type, {
-      params: params
-    });
-
-    var data = response && response.data ? response.data : response;
-    var results = data && data.results ? data.results : [];
-
-    if (!results || !results.length) return null;
-
-    return results[0];
-  } catch (e) {
-    return null;
+    score += hit * 10;
   }
+
+  var resultYear = getTmdbYear(result);
+  if (year && resultYear) {
+    var diff = Math.abs(parseInt(year, 10) - parseInt(resultYear, 10));
+    if (diff === 0) score += 40;
+    else if (diff === 1) score += 20;
+    else if (diff === 2) score += 5;
+    else score -= diff * 5;
+  }
+
+  if (mediaType === "show") {
+    if (result.name || result.original_name) score += 15;
+  } else {
+    if (result.title || result.original_title) score += 15;
+  }
+
+  if (typeof result.vote_count === "number") {
+    if (result.vote_count > 100) score += 10;
+    else if (result.vote_count > 20) score += 5;
+  }
+
+  if (result.adult === true) {
+    score -= 300;
+  }
+
+  return score;
+}
+
+function buildSearchTitles(item) {
+  var titles = [];
+  var title = item && item.title ? String(item.title).trim() : "";
+  var ids = item && item.ids ? item.ids : {};
+
+  if (title) titles.push(title);
+
+  if (ids.slug) {
+    var slugTitle = String(ids.slug)
+      .replace(/-/g, " ")
+      .replace(/\b(us|uk|jp|kr)\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (slugTitle) titles.push(slugTitle);
+  }
+
+  var uniq = [];
+  var map = {};
+  for (var i = 0; i < titles.length; i++) {
+    var n = normalizeText(titles[i]);
+    if (n && !map[n]) {
+      map[n] = true;
+      uniq.push(titles[i]);
+    }
+  }
+  return uniq;
+}
+
+async function tmdbSearchBest(titleList, year, mediaType) {
+  if (!titleList || !titleList.length) return null;
+
+  var type = mediaType === "movie" ? "movie" : "tv";
+  var best = null;
+  var bestScore = -9999;
+
+  for (var i = 0; i < titleList.length; i++) {
+    var title = titleList[i];
+    if (!title) continue;
+
+    try {
+      var params = {
+        query: title,
+        language: "zh-CN",
+        include_adult: false
+      };
+
+      if (year) {
+        if (type === "movie") {
+          params.primary_release_year = year;
+        } else {
+          params.first_air_date_year = year;
+        }
+      }
+
+      var response = await Widget.tmdb.get("/search/" + type, {
+        params: params
+      });
+
+      var data = response && response.data ? response.data : response;
+      var results = data && data.results ? data.results : [];
+
+      for (var j = 0; j < results.length; j++) {
+        var candidate = results[j];
+        var score = scoreTmdbCandidate(candidate, title, year, mediaType);
+
+        if (score > bestScore) {
+          bestScore = score;
+          best = candidate;
+        }
+      }
+    } catch (e) {}
+  }
+
+  return best;
 }
 
 async function resolveTmdbDetail(item, mediaType) {
@@ -238,22 +352,22 @@ async function resolveTmdbDetail(item, mediaType) {
 
   var ids = item.ids || {};
   var year = item.year || "";
-  var title = item.title || "";
+  var titleList = buildSearchTitles(item);
 
   if (ids.tmdb) {
     var detailById = await tmdbGetDetailById(ids.tmdb, mediaType);
     if (detailById) return detailById;
   }
 
-  var searchResult = await tmdbSearchByTitle(title, year, mediaType);
-  if (!searchResult) return null;
+  var bestSearchResult = await tmdbSearchBest(titleList, year, mediaType);
+  if (!bestSearchResult) return null;
 
-  if (searchResult.id) {
-    var detailBySearchId = await tmdbGetDetailById(searchResult.id, mediaType);
+  if (bestSearchResult.id) {
+    var detailBySearchId = await tmdbGetDetailById(bestSearchResult.id, mediaType);
     if (detailBySearchId) return detailBySearchId;
   }
 
-  return searchResult;
+  return bestSearchResult;
 }
 
 function mapGenres(genres) {
