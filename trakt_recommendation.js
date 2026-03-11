@@ -68,7 +68,12 @@ const TRAKT_CONFIG = {
   PER_PAGE: 20,
   POSTER_BASE: "https://image.tmdb.org/t/p/w500"
 };
-
+function buildQuery(params = {}) {
+  return Object.entries(params)
+    .filter(([_, v]) => v !== undefined && v !== null && v !== "")
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join("&");
+}
 function buildDescription(item, mediaType) {
   const parts = [];
 
@@ -102,7 +107,7 @@ function validateParams(params) {
 }
 
 async function traktGet(path, queryParams = {}, clientId, accessToken) {
-  const query = new URLSearchParams(queryParams).toString();
+  const query = buildQuery(queryParams);
   const url = `${TRAKT_CONFIG.BASE_URL}${path}${query ? `?${query}` : ""}`;
 
   const response = await Widget.http.get(url, {
