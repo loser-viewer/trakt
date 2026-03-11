@@ -253,15 +253,15 @@ async function fetchTraktRecommendations(mediaKind, params) {
     batch = list.slice(i, i + concurrency);
 
     batchResults = await Promise.all(batch.map(async function(entry) {
-      var item = entry ? entry[mediaKind] : null;
+      var item = entry;
       var tmdbId, tmdbDetail;
 
       if (!item) return null;
 
-      tmdbId = item && item.ids ? item.ids.tmdb : null;
+      tmdbId = item.ids ? item.ids.tmdb : null;
       tmdbDetail = await tmdbGetDetail(tmdbId, mediaKind);
 
-      return mapToForwardItem(entry, tmdbDetail, mediaKind);
+      return mapToForwardItem({[mediaKind]: item}, tmdbDetail, mediaKind);
     }));
 
     for (j = 0; j < batchResults.length; j++) {
