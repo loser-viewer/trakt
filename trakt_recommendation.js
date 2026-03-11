@@ -63,37 +63,50 @@ WidgetMetadata = {
   ]
 };
 
-const TRAKT_CONFIG = {
+var TRAKT_CONFIG = {
   BASE_URL: "https://api.trakt.tv",
   PER_PAGE: 20,
-  POSTER_BASE: "https://image.tmdb.org/t/p/w500"
+  POSTER_BASE: "https://image.tmdb.org/t/p/w500",
+  BACKDROP_BASE: "https://image.tmdb.org/t/p/w780"
 };
-function buildQuery(params = {}) {
-  return Object.entries(params)
-    .filter(([_, v]) => v !== undefined && v !== null && v !== "")
-    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-    .join("&");
+
+function buildQuery(params) {
+  params = params || {};
+  var arr = [];
+  var key;
+  for (key in params) {
+    if (params.hasOwnProperty(key)) {
+      if (params[key] !== undefined && params[key] !== null && params[key] !== "") {
+        arr.push(encodeURIComponent(key) + "=" + encodeURIComponent(params[key]));
+      }
+    }
+  }
+  return arr.join("&");
 }
+
 function buildDescription(item, mediaType) {
-  const parts = [];
+  item = item || {};
+  var parts = [];
 
-  const year = item.year || "";
-  if (year) parts.push(`年份: ${year}`);
-
-  if (mediaType === "show") {
-    const status = item.status || "";
-    if (status) parts.push(`状态: ${status}`);
+  if (item.year) {
+    parts.push("年份: " + item.year);
   }
 
-  const overview = (item.overview || "").trim();
-  if (overview) parts.push(overview);
+  if (mediaType === "show" && item.status) {
+    parts.push("状态: " + item.status);
+  }
+
+  if (item.overview) {
+    parts.push(String(item.overview).trim());
+  }
 
   return parts.join(" ｜ ");
 }
 
 function validateParams(params) {
-  const clientId = (params.client_id || "").trim();
-  const accessToken = (params.access_token || "").trim();
+  params = params || {};
+  var clientId = String(params.client_id || "").trim();
+  var accessToken = String(params.access_token || "").trim();
 
   if (!clientId) {
     throw new Error("请填写 Trakt Client ID");
@@ -103,102 +116,120 @@ function validateParams(params) {
     throw new Error("请填写 Trakt Access Token");
   }
 
-  return { clientId, accessToken };
+  return {
+    clientId: clientId,
+    accessToken: accessToken
+  };
 }
 
-async function traktGet(path, queryParams = {}, clientId, accessToken) {
-  const query = buildQuery(queryParams);
-  const url = `${TRAKT_CONFIG.BASE_URL}${path}${query ? `?${query}` : ""}`;
+async function traktGet(path, queryParams, clientId, accessToken) {
+  queryParams = queryParams || {};
+  var query = buildQuery(queryParams);
+  var url = TRAKT_CONFIG.BASE_URL + path + (query ? ("?" + query) : "");
 
-  const response = await Widget.http.get(url, {
+  var response = await Widget.http.get(url, {
     headers: {
       "Content-Type": "application/json",
       "trakt-api-version": "2",
       "trakt-api-key": clientId,
-      "Authorization": `Bearer ${accessToken}`
+      "Authorization": "Bearer " + accessToken
     }
   });
 
-  return response?.data || [];
+  return (response && response.data) ? response.data : [];
 }
 
 async function tmdbGetDetail(tmdbId, mediaType) {
   if (!tmdbId) return null;
 
   try {
-    const type = mediaType === "movie" ? "movie" : "tv";
-    const response = await Widget.tmdb.get(`/${type}/${tmdbId}`, {
+    var type = mediaType === "movie" ? "movie" : "tv";
+    var response = await Widget.tmdb.get("/" + type + "/" + tmdbId, {
       params: {
         language: "zh-CN"
       }
     });
 
-    return response?.data || response || null;
+    if (response && response.data) return response.data;
+    if (response) return response;
+    return null;
   } catch (e) {
     return null;
   }
 }
 
+function mapGenres(genres) {
+  if (!genres || !genres.length) return null;
+  return genres.map(function(g) {
+    return g.name;
+  }).join(", ");
+}
+
 function mapToForwardItem(traktWrapper, tmdbDetail, mediaKind) {
-  const item = traktWrapper[mediaKind];
-  const ids = item?.ids || {};
+  var item = traktWrapper ? traktWrapper[mediaKind] : null;
+  var ids = (item && item.ids) ? item.ids : {};
 
-  const title = (tmdbDetail?.title || tmdbDetail?.name || item?.title || "未知标题").trim();
-  const releaseDate =
-    tmdbDetail?.release_date ||
-    tmdbDetail?.first_air_date ||
-    (item?.year ? `${item.year}-01-01` : "");
+  var title = "未知标题";
+  if (tmdbDetail && tmdbDetail.title) title = String(tmdbDetail.title).trim();
+  else if (tmdbDetail && tmdbDetail.name) title = String(tmdbDetail.name).trim();
+  else if (item && item.title) title = String(item.title).trim();
 
-  const rating =
-    typeof tmdbDetail?.vote_average === "number" && tmdbDetail.vote_average > 0
-      ? tmdbDetail.vote_average.toFixed(1)
-      : "";
+  var releaseDate = "";
+  if (tmdbDetail && tmdbDetail.release_date) releaseDate = tmdbDetail.release_date;
+  else if (tmdbDetail && tmdbDetail.first_air_date) releaseDate = tmdbDetail.first_air_date;
+  else if (item && item.year) releaseDate = item.year + "-01-01";
 
-  const posterPath = tmdbDetail?.poster_path
-    ? `${TRAKT_CONFIG.POSTER_BASE}${tmdbDetail.poster_path}`
-    : "";
+  var rating = "";
+  if (tmdbDetail && typeof tmdbDetail.vote_average === "number" && tmdbDetail.vote_average > 0) {
+    rating = tmdbDetail.vote_average.toFixed(1);
+  }
 
-  const backdropPath = tmdbDetail?.backdrop_path
-    ? `https://image.tmdb.org/t/p/w780${tmdbDetail.backdrop_path}`
-    : "";
+  var posterPath = "";
+  if (tmdbDetail && tmdbDetail.poster_path) {
+    posterPath = TRAKT_CONFIG.POSTER_BASE + tmdbDetail.poster_path;
+  }
 
-  const overview = tmdbDetail?.overview || item?.overview || "";
-  const traktUrl = `https://trakt.tv/${mediaKind === "movie" ? "movies" : "shows"}/${ids.slug || ""}`;
+  var backdropPath = "";
+  if (tmdbDetail && tmdbDetail.backdrop_path) {
+    backdropPath = TRAKT_CONFIG.BACKDROP_BASE + tmdbDetail.backdrop_path;
+  }
+
+  var overview = "";
+  if (tmdbDetail && tmdbDetail.overview) overview = tmdbDetail.overview;
+  else if (item && item.overview) overview = item.overview;
+
+  var slug = ids.slug || "";
+  var traktUrl = "https://trakt.tv/" + (mediaKind === "movie" ? "movies" : "shows") + "/" + slug;
 
   return {
     id: String(ids.tmdb || ids.trakt || ids.slug || title),
     type: "link",
-    title,
-    posterPath,
-    backdropPath,
-    releaseDate,
+    title: title,
+    posterPath: posterPath,
+    backdropPath: backdropPath,
+    releaseDate: releaseDate,
     mediaType: mediaKind === "movie" ? "movie" : "tv",
-    rating,
-    description: buildDescription(
-      {
-        year: item?.year,
-        status: tmdbDetail?.status || "",
-        overview
-      },
-      mediaKind
-    ),
-    genreTitle: Array.isArray(tmdbDetail?.genres) && tmdbDetail.genres.length
-      ? tmdbDetail.genres.map(g => g.name).join(", ")
-      : null,
+    rating: rating,
+    description: buildDescription({
+      year: item ? item.year : "",
+      status: tmdbDetail ? (tmdbDetail.status || "") : "",
+      overview: overview
+    }, mediaKind),
+    genreTitle: mapGenres(tmdbDetail ? tmdbDetail.genres : null),
     link: traktUrl
   };
 }
 
-async function fetchTraktRecommendations(mediaKind, params = {}) {
-  const { clientId, accessToken } = validateParams(params);
-  const pageNum = parseInt(params.page || "1", 10) || 1;
+async function fetchTraktRecommendations(mediaKind, params) {
+  params = params || {};
+  var validated = validateParams(params);
+  var clientId = validated.clientId;
+  var accessToken = validated.accessToken;
+  var pageNum = parseInt(params.page || "1", 10) || 1;
 
-  const path =
-    mediaKind === "movie"
-      ? "/recommendations/movies"
-      : "/recommendations/shows";
+  var path = mediaKind === "movie" ? "/recommendations/movies" : "/recommendations/shows";
 
-  const list = await traktGet(
+  var list = await traktGet(
     path,
     {
       page: pageNum,
@@ -210,37 +241,43 @@ async function fetchTraktRecommendations(mediaKind, params = {}) {
     accessToken
   );
 
-  if (!Array.isArray(list) || list.length === 0) {
+  if (!list || !list.length) {
     return [];
   }
 
-  const results = [];
-  const concurrency = 6;
+  var results = [];
+  var concurrency = 6;
+  var i, batch, batchResults, j;
 
-  for (let i = 0; i < list.length; i += concurrency) {
-    const batch = list.slice(i, i + concurrency);
+  for (i = 0; i < list.length; i += concurrency) {
+    batch = list.slice(i, i + concurrency);
 
-    const batchResults = await Promise.all(
-      batch.map(async (entry) => {
-        const item = entry[mediaKind];
-        if (!item) return null;
+    batchResults = await Promise.all(batch.map(async function(entry) {
+      var item = entry ? entry[mediaKind] : null;
+      var tmdbId, tmdbDetail;
 
-        const tmdbId = item?.ids?.tmdb;
-        const tmdbDetail = await tmdbGetDetail(tmdbId, mediaKind);
-        return mapToForwardItem(entry, tmdbDetail, mediaKind);
-      })
-    );
+      if (!item) return null;
 
-    results.push(...batchResults.filter(Boolean));
+      tmdbId = item && item.ids ? item.ids.tmdb : null;
+      tmdbDetail = await tmdbGetDetail(tmdbId, mediaKind);
+
+      return mapToForwardItem(entry, tmdbDetail, mediaKind);
+    }));
+
+    for (j = 0; j < batchResults.length; j++) {
+      if (batchResults[j]) {
+        results.push(batchResults[j]);
+      }
+    }
   }
 
   return results;
 }
 
-async function fetchTraktMovieRecommendations(params = {}) {
-  return await fetchTraktRecommendations("movie", params);
+async function fetchTraktMovieRecommendations(params) {
+  return await fetchTraktRecommendations("movie", params || {});
 }
 
-async function fetchTraktShowRecommendations(params = {}) {
-  return await fetchTraktRecommendations("show", params);
+async function fetchTraktShowRecommendations(params) {
+  return await fetchTraktRecommendations("show", params || {});
 }
