@@ -1,10 +1,10 @@
 WidgetMetadata = {
   id: "trakt_recommendations",
   title: "Trakt 推荐榜单",
-  description: "获取 Trakt 个性化推荐电影 / 剧集列表",
+  description: "获取 Trakt 个性化推荐电影 / 剧集列表（支持自动刷新 token）",
   author: "hyl",
   site: "https://github.com/quantumultxx/ForwardWidgets",
-  version: "1.4",
+  version: "1.5",
   requiredVersion: "0.0.1",
   detailCacheDuration: 1800,
   modules: [
@@ -22,8 +22,20 @@ WidgetMetadata = {
           value: ""
         },
         {
+          name: "client_secret",
+          title: "Trakt Client Secret",
+          type: "input",
+          value: ""
+        },
+        {
           name: "access_token",
           title: "Trakt Access Token",
+          type: "input",
+          value: ""
+        },
+        {
+          name: "refresh_token",
+          title: "Trakt Refresh Token",
           type: "input",
           value: ""
         },
@@ -58,8 +70,20 @@ WidgetMetadata = {
           value: ""
         },
         {
+          name: "client_secret",
+          title: "Trakt Client Secret",
+          type: "input",
+          value: ""
+        },
+        {
           name: "access_token",
           title: "Trakt Access Token",
+          type: "input",
+          value: ""
+        },
+        {
+          name: "refresh_token",
+          title: "Trakt Refresh Token",
           type: "input",
           value: ""
         },
@@ -140,7 +164,7 @@ function normalizeImageUrl(url) {
   return u;
 }
 
-function buildDescription(item, mediaType) {
+function buildDescription(item, mediaType, tokenNotice) {
   item = item || {};
   var parts = [];
 
@@ -156,25 +180,38 @@ function buildDescription(item, mediaType) {
     parts.push(String(item.overview).trim());
   }
 
+  if (tokenNotice) {
+    parts.push(tokenNotice);
+  }
+
   return parts.join(" ｜ ");
 }
 
 function validateParams(params) {
   params = params || {};
   var clientId = String(params.client_id || "").trim();
+  var clientSecret = String(params.client_secret || "").trim();
   var accessToken = String(params.access_token || "").trim();
+  var refreshToken = String(params.refresh_token || "").trim();
 
   if (!clientId) {
     throw new Error("请填写 Trakt Client ID");
   }
-
+  if (!clientSecret) {
+    throw new Error("请填写 Trakt Client Secret");
+  }
   if (!accessToken) {
     throw new Error("请填写 Trakt Access Token");
+  }
+  if (!refreshToken) {
+    throw new Error("请填写 Trakt Refresh Token");
   }
 
   return {
     clientId: clientId,
-    accessToken: accessToken
+    clientSecret: clientSecret,
+    accessToken: accessToken,
+    refreshToken: refreshToken
   };
 }
 
@@ -192,24 +229,72 @@ function parseResponseData(response) {
   return data;
 }
 
-async function traktGet(path, queryParams, clientId, accessToken) {
+async function refreshTraktToken(authState) {
+  logDebug("[Trakt] 开始刷新 token");
+
+  var response = await Widget.http.post(TRAKT_CONFIG.BASE_URL + "/oauth/token", {
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      refresh_token: authState.refreshToken,
+      client_id: authState.clientId,
+      client_secret: authState.clientSecret,
+      redirect_uri: "urn:ietf:wg:oauth:2.0:oob",
+      grant_type: "refresh_token"
+    })
+  });
+
+  if (!response) {
+    throw new Error("Trakt 刷新 token 失败：无响应");
+  }
+
+  if (response.statusCode && response.statusCode >= 400) {
+    throw new Error("Trakt 刷新 token 失败，状态码: " + response.statusCode);
+  }
+
+  var data = parseResponseData(response);
+  if (!data || !data.access_token || !data.refresh_token) {
+    throw new Error("Trakt 刷新 token 失败：返回数据无效");
+  }
+
+  authState.accessToken = String(data.access_token);
+  authState.refreshToken = String(data.refresh_token);
+  authState.tokenUpdated = true;
+
+  logDebug("[Trakt] token 刷新成功");
+  return authState;
+}
+
+async function traktGet(path, queryParams, authState) {
   queryParams = queryParams || {};
   var query = buildQuery(queryParams);
   var url = TRAKT_CONFIG.BASE_URL + path + (query ? ("?" + query) : "");
 
-  logDebug("[Trakt] GET:", url);
+  async function doRequest() {
+    return await Widget.http.get(url, {
+      headers: {
+        "Content-Type": "application/json",
+        "trakt-api-version": "2",
+        "trakt-api-key": authState.clientId,
+        "Authorization": "Bearer " + authState.accessToken
+      }
+    });
+  }
 
-  var response = await Widget.http.get(url, {
-    headers: {
-      "Content-Type": "application/json",
-      "trakt-api-version": "2",
-      "trakt-api-key": clientId,
-      "Authorization": "Bearer " + accessToken
-    }
-  });
+  var response = await doRequest();
 
   if (!response) {
     throw new Error("Trakt 请求失败：无响应");
+  }
+
+  if (response.statusCode === 401) {
+    await refreshTraktToken(authState);
+    response = await doRequest();
+  }
+
+  if (!response) {
+    throw new Error("Trakt 请求失败：刷新后无响应");
   }
 
   if (response.statusCode && response.statusCode >= 400) {
@@ -217,7 +302,6 @@ async function traktGet(path, queryParams, clientId, accessToken) {
   }
 
   var data = parseResponseData(response);
-
   if (!data) return [];
   return data;
 }
@@ -393,7 +477,6 @@ async function resolveTmdbDetail(item, mediaType) {
 
   var bestSearchResult = await tmdbSearchBest(titleList, year, mediaType);
   if (!bestSearchResult) {
-    logDebug("[Trakt/TMDB] 未找到匹配:", item && item.title, item && item.year);
     return null;
   }
 
@@ -412,9 +495,15 @@ function mapGenres(genres) {
   }).join(", ");
 }
 
-function mapToForwardItem(item, tmdbDetail, mediaKind) {
+function buildTokenNotice(authState) {
+  if (!authState || !authState.tokenUpdated) return "";
+  return "新的 access_token: " + authState.accessToken + " ｜ 新的 refresh_token: " + authState.refreshToken;
+}
+
+function mapToForwardItem(item, tmdbDetail, mediaKind, authState) {
   item = item || {};
   var ids = item.ids || {};
+  var tokenNotice = buildTokenNotice(authState);
 
   var title = "未知标题";
   if (tmdbDetail && tmdbDetail.title) title = String(tmdbDetail.title).trim();
@@ -472,7 +561,7 @@ function mapToForwardItem(item, tmdbDetail, mediaKind) {
         year: item.year || "",
         status: tmdbDetail ? (tmdbDetail.status || "") : "",
         overview: overview || ""
-      }, mediaKind),
+      }, mediaKind, tokenNotice),
       genreTitle: mapGenres(tmdbDetail ? tmdbDetail.genres : null),
       link: null
     };
@@ -491,7 +580,7 @@ function mapToForwardItem(item, tmdbDetail, mediaKind) {
       year: item.year || "",
       status: tmdbDetail ? (tmdbDetail.status || "") : "",
       overview: overview || ""
-    }, mediaKind),
+    }, mediaKind, tokenNotice),
     genreTitle: mapGenres(tmdbDetail ? tmdbDetail.genres : null),
     link: traktUrl || null
   };
@@ -500,11 +589,16 @@ function mapToForwardItem(item, tmdbDetail, mediaKind) {
 async function fetchTraktRecommendations(mediaKind, params) {
   params = params || {};
   var validated = validateParams(params);
-  var clientId = validated.clientId;
-  var accessToken = validated.accessToken;
+  var authState = {
+    clientId: validated.clientId,
+    clientSecret: validated.clientSecret,
+    accessToken: validated.accessToken,
+    refreshToken: validated.refreshToken,
+    tokenUpdated: false
+  };
+
   var pageNum = parseInt(params.page || "1", 10) || 1;
   var sort = String(params.sort || "default");
-
   var path = mediaKind === "movie" ? "/recommendations/movies" : "/recommendations/shows";
 
   var list = await traktGet(
@@ -513,8 +607,7 @@ async function fetchTraktRecommendations(mediaKind, params) {
       page: pageNum,
       limit: TRAKT_CONFIG.PER_PAGE
     },
-    clientId,
-    accessToken
+    authState
   );
 
   if (!list || !list.length) {
@@ -535,7 +628,7 @@ async function fetchTraktRecommendations(mediaKind, params) {
       if (!item) return null;
 
       tmdbDetail = await resolveTmdbDetail(item, mediaKind);
-      return mapToForwardItem(item, tmdbDetail, mediaKind);
+      return mapToForwardItem(item, tmdbDetail, mediaKind, authState);
     }));
 
     for (j = 0; j < batchResults.length; j++) {
